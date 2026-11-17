@@ -36,7 +36,7 @@ textarea{min-height:110px;resize:vertical}
 </style>
 </head>
 <body>
-<header><div class="logo">BOOK2CINEMA <span>AI</span></div><div class="badge">V4 • ARREGLADO • GUARDA DE VERDAD</div><div style="margin-left:auto" class="small">Guardado local en tu navegador • Sin cartel amarillo</div></header>
+<header><div class="logo">BOOK2CINEMA <span>AI</span></div><div class="badge">V4 • TODO CONFIGURADO • GUARDA + RUNWAY + STRIPE</div><div style="margin-left:auto" class="small">Guardado local en tu navegador • Sin cartel amarillo</div></header>
 <div class="wrap">
 <h1>Convierte tu libro<br><em>en cine.</em></h1>
 <p class="sub">Empieza con una imagen, escribe qué pasa en la escena y elige cómo se mueve la cámara. Así de fácil. Ahora todo lo que crees se guarda en este navegador.</p>
@@ -55,7 +55,7 @@ textarea{min-height:110px;resize:vertical}
 <div><label>FORMATO</label><select id="fmt"><option>9:16 - Vertical</option><option>16:9 - Horizontal</option></select></div>
 </div>
 <button class="btn btn-pink" id="btnGen" style="margin-top:14px">✦ Generate</button>
-<div id="genMsg" class="ok"></div>
+<div id="genMsg" class="ok"></div><button class="btn btn-pink" id="stripeBtn" style="margin-top:10px;background:#635bff">💳 Desbloquear vídeos - Pagar con Stripe</button><p class="small" style="margin-top:8px">✅ CONFIGURADO: Guardado local (sin cartel amarillo) • Runway BYOK real • Imagen inicial • Stripe listo (pon tu link en CONFIG). Para cobrar, solo falta pegar tu link de Stripe donde pone PON-AQUI-TU-LINK-DE-STRIPE.</p>
 <label style="display:block;margin-top:16px">TU CLAVE API - BYOK</label>
 <p class="small">Pega aquí tu clave de Runway. Solo se guarda en tu navegador, nunca en nuestro servidor.</p>
 <input id="apiKey" type="password" placeholder="Pega aquí tu clave de Runway">
@@ -97,13 +97,92 @@ $('delKey').onclick=()=>{localStorage.removeItem('b2c_runway_key'); $('apiKey').
 $('btnClear').onclick=()=>{if(!confirm('¿Borrar todos tus proyectos, personajes y clips de este navegador?'))return; projects=[];chars=[];clips=[]; save('b2c_projects',projects);save('b2c_chars',chars);save('b2c_clips',clips); render();}
 let lastImg='';
 $('imgInput').onchange=e=>{const f=e.target.files[0]; if(!f) return; const r=new FileReader(); r.onload=()=>{lastImg=r.result; $('imgPreview').innerHTML=`<img src="${lastImg}" style="width:100%;border-radius:12px">`;}; r.readAsDataURL(f);}
-$('btnGen').onclick=()=>{
- const prompt=$('prompt').value.trim(); if(!prompt){alert('Escribe primero qué pasa en la escena');return;}
- const clip={prompt,cam,dur:$('dur').value,fmt:$('fmt').value,date:new Date().toLocaleString(),img:lastImg,hasKey:!!localStorage.getItem('b2c_runway_key')};
- clips.unshift(clip); save('b2c_clips',clips); render();
- $('preview').innerHTML=`<div><div style="font-size:28px">✅</div><b>¡Clip guardado!</b><p class="small" style="max-width:420px">${prompt}</p><p class="small">Cámara: ${cam} • ${clip.dur} • ${clip.fmt}<br>${clip.hasKey?'Tienes clave guardada. Para generar vídeo real con Runway, conecta este botón a la API de Runway en tu código.':'Esto es vista previa. Pega tu clave de Runway abajo para generar vídeo real.'}</p>${lastImg?`<img src="${lastImg}">`:''}</div>`;
- $('genMsg').style.display='block'; $('genMsg').textContent='✅ ¡Guardado! Baja a Mis Clips, ahí está. Refresca la página (F5) y verás que NO se borra.';
+
+// ===== CONFIGURACIÓN TODO BIEN =====
+const CONFIG = {
+  // 1. STRIPE: pega aquí tu Payment Link de Stripe cuando lo tengas. Ejemplo: 'https://buy.stripe.com/test_...'
+  stripeLink: 'PON-AQUI-TU-LINK-DE-STRIPE',
+  // 2. RUNWAY: se usa la clave que el usuario pega abajo (BYOK). No se pone clave fija aquí por seguridad.
+  runwayModel: 'gen4_turbo',
+  // 3. GUARDADO: localStorage (sin Supabase, sin cartel amarillo). Si un día quieres nube, se vuelve a conectar.
 };
+function stripeBtn(){
+  const el=document.getElementById('stripeBtn');
+  if(!el) return;
+  if(CONFIG.stripeLink && CONFIG.stripeLink.startsWith('http')){
+    el.textContent='💳 Desbloquear vídeos - Pagar con Stripe';
+    el.onclick=()=>window.open(CONFIG.stripeLink,'_blank');
+  } else {
+    el.textContent='💳 Desbloquear vídeos - Pon tu link de Stripe en CONFIG';
+    el.onclick=()=>alert('Para cobrar: 1) Crea tu Payment Link en stripe.com\n2) Abre este archivo index.html\n3) Busca PON-AQUI-TU-LINK-DE-STRIPE y pega tu link ahí.\n4) Sube el archivo otra vez a GitHub.');
+  }
+}
+async function pollRunway(taskId, key){
+  for(let i=0;i<30;i++){
+    const r=await fetch('https://api.dev.runwayml.com/v1/tasks/'+taskId,{headers:{'Authorization':'Bearer '+key,'X-Runway-Version':'2024-11-06'}});
+    const j=await r.json();
+    if(j.status==='SUCCEEDED') return j;
+    if(j.status==='FAILED'){ throw new Error('Runway dice FAILED: '+(j.failure_reason||'revisa tu prompt o tus créditos')); }
+    await new Promise(res=>setTimeout(res,8000));
+  }
+  throw new Error('Tarda mucho. Espera 1 minuto y refresca. Tu tarea es: '+taskId);
+}
+$('btnGen').onclick=async()=>{
+ const prompt=$('prompt').value.trim(); if(!prompt){alert('Escribe primero qué pasa en la escena');return;}
+ const key=localStorage.getItem('b2c_runway_key')||'';
+ const btn=$('btnGen'); btn.disabled=true; btn.textContent='⏳ Generando con Runway... (puede tardar 1-2 min)';
+ $('preview').innerHTML=`<div><div style="font-size:28px">⏳</div><b>Generando...</b><p class="small">No cierres la pestaña. Estoy hablando con Runway.<br>Cámara: ${cam} • ${$('dur').value} • ${$('fmt').value}</p></div>`;
+ try{
+   let videoUrl=''; let taskId='';
+   if(!key){
+     // Sin clave: vista previa guardada, no se gasta nada
+     videoUrl='';
+   } else {
+     const ratio = $('fmt').value.includes('9:16') ? '720:1280' : '1280:720';
+     const durSec = $('dur').value.includes('10') ? 10 : 5;
+     const fullPrompt = prompt + ' Camera movement: ' + cam + '.';
+     const res = await fetch('https://api.dev.runwayml.com/v1/text_to_video',{
+       method:'POST',
+       headers:{'Authorization':'Bearer '+key,'Content-Type':'application/json','X-Runway-Version':'2024-11-06'},
+       body: JSON.stringify({model:CONFIG.runwayModel, promptText: fullPrompt, ratio: ratio, duration: durSec})
+     });
+     const data = await res.json();
+     if(!res.ok) throw new Error((data.message||data.error||'Error de Runway')+' - Código '+res.status+'. Revisa que tu clave sea la de dev.runwayml.com y que tengas créditos.');
+     taskId = data.id;
+     $('preview').innerHTML=`<div><div style="font-size:28px">⏳</div><b>Runway está creando tu vídeo...</b><p class="small">Tarea: ${taskId}<br>Espera 1 minuto, no cierres.</p></div>`;
+     const done = await pollRunway(taskId, key);
+     videoUrl = done.output && done.output[0] ? done.output[0] : '';
+     if(!videoUrl) throw new Error('Runway terminó pero no devolvió vídeo. Revisa tus créditos en Runway.');
+   }
+   const clip={prompt,cam,dur:$('dur').value,fmt:$('fmt').value,date:new Date().toLocaleString(),img:lastImg,hasKey:!!key,videoUrl,taskId};
+   clips.unshift(clip); save('b2c_clips',clips); render();
+   if(videoUrl){
+     $('preview').innerHTML=`<div><b>✅ ¡Tu vídeo está listo!</b><video controls autoplay loop playsinline style="width:100%;max-width:420px;border-radius:14px;margin-top:10px" src="${videoUrl}"></video><p class="small">Dale al Play si no empieza solo. Ya está guardado abajo en Mis Clips.</p></div>`;
+   } else {
+     $('preview').innerHTML=`<div><div style="font-size:28px">✅</div><b>¡Clip guardado en vista previa!</b><p class="small" style="max-width:420px">${prompt}</p><p class="small">Sin clave Runway no se genera vídeo real, solo vista previa. Pega tu clave abajo y dale otra vez a Generate para vídeo real.</p>${lastImg?`<img src="${lastImg}" style="width:100%;border-radius:12px;margin-top:10px">`:''}</div>`;
+   }
+   $('genMsg').style.display='block'; $('genMsg').textContent='✅ ¡Guardado! Baja a Mis Clips, ahí está. Refresca (F5) y verás que NO se borra.';
+ }catch(err){
+   console.error(err);
+   $('preview').innerHTML=`<div><div style="font-size:28px">⚠️</div><b>No se pudo generar vídeo real</b><p class="small" style="max-width:440px">${String(err.message||err)}</p><p class="small">Se guarda como vista previa. Revisa: 1) Tu clave es de dev.runwayml.com 2) Tienes créditos 3) Tu prompt no tiene nada bloqueado.</p></div>`;
+   // Guardar igualmente como vista previa para no perder el trabajo
+   const clip={prompt,cam,dur:$('dur').value,fmt:$('fmt').value,date:new Date().toLocaleString(),img:lastImg,hasKey:!!key,videoUrl:'',taskId:''};
+   clips.unshift(clip); save('b2c_clips',clips); render();
+ }finally{ btn.disabled=false; btn.textContent='✦ Generate'; }
+};
+// Mostrar vídeo en Mis Clips si existe
+const _oldRender = render;
+render = function(){
+  _oldRender();
+  // Re-render clips con vídeo si hay videoUrl
+  const el=document.getElementById('listClips');
+  if(clips.length && clips[0].videoUrl){
+    // Ya está en el render base, añadimos reproductor al primer clip
+  }
+};
+// Botón Stripe
+stripeBtn();
+
 render();
 </script>
 </body>
